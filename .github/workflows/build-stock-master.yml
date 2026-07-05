@@ -1,0 +1,33 @@
+name: build-stock-master
+
+# 매일 아침 KRX 상장법인목록을 받아 stock_master.json을 갱신한다.
+# 목록이 실제로 바뀐 날만 커밋(스크립트가 버전 비교) → 앱이 괜히 매일 재다운 안 함.
+on:
+  schedule:
+    - cron: '0 23 * * *'   # 매일 08:00 KST (UTC 23:00)
+  workflow_dispatch:        # 수동 실행 버튼
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Generate stock_master.json
+        run: python scripts/build_stock_master.py
+      - name: Commit if changed
+        run: |
+          if [[ -n "$(git status --porcelain stock_master.json)" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add stock_master.json
+            git commit -m "data: stock_master.json 자동 갱신 ($(date -u +%Y-%m-%d))"
+            git push
+          else
+            echo "no change"
+          fi
