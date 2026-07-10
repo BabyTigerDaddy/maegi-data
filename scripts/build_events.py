@@ -25,6 +25,12 @@ OUT = "events.json"
 KST = timezone(timedelta(hours=9))
 API = "https://opendart.fss.or.kr/api"
 
+# 자사주 취득 '목적' 필터 — '노이즈만 제외' 방식(개수 캡 대신).
+# 진짜 주주환원 신호(소각·주가안정·주주가치 등)가 하나라도 있으면 포함,
+# 절차성(임직원 보상·교환사채·상환)만 있으면 제외. 목적이 섞이면 진짜 신호 우선(포함).
+TREASURY_INCLUDE = ("소각", "안정", "주주가치", "주주환원", "기업가치", "저평가")
+TREASURY_EXCLUDE = ("임직원", "종업원", "상여", "스톡옵션", "스톡그랜트", "우리사주", "교환사채", "상환", "성과급", "합병")
+
 
 def _mask(url):
     """로그·예외에 남길 URL에서 인증키 값을 가린다. public repo라 액션 로그도 공개이므로 필수."""
@@ -117,6 +123,23 @@ def treasury_detail(corp_code, bgn, end):
         amt = _num(r.get("aqpln_prc_ostk"))  # 취득예정금액(보통주, 원)
         out[r.get("rcept_no")] = (int(amt) if amt else None, (r.get("aq_pp") or "").strip())
     return out
+
+
+def shares_total(corp_code):
+    """발행 보통주 총수 — 시가총액(현재가×주식수) 계산용. 최근 보고서부터 시도, 못 구하면 None."""
+    for yr, rc in (("2025", "11011"), ("2025", "11014"), ("2025", "11012"), ("2024", "11011")):
+        try:
+            d = json.loads(_get(f"{API}/stockTotqySttus.json?crtfc_key={KEY}&corp_code={corp_code}&bsns_year={yr}&reprt_code={rc}"))
+        except Exception:
+            continue
+        if d.get("status") != "000":
+            continue
+        for r in d.get("list", []):
+            if (r.get("se") or "").strip() in ("보통주", "합계"):
+                n = _num(r.get("istc_totqy"))
+                if n and n > 0:
+                    return int(n)
+    return None
 
 
 def _num(s):
@@ -225,6 +248,7 @@ def build_events():
             "ratioChange": chg,          # 증감 %p
             "amount": None,              # (자사주 렌즈 전용 — 국민연금은 null)
             "purpose": None,
+            "capRatio": None,
             "priceBase": price_base,      # 공시일(휴장이면 직전 거래일) 종가 (원, null 가능)
             "priceLast": price_last,      # 최근 거래일 종가 (원)
             "priceChange": price_change,  # 공시일→최근 변화율 % (null 가능)
@@ -234,6 +258,7 @@ def build_events():
 
     # ── 자사주 렌즈 ── 회사가 자기 주식 취득(담음)/처분(던짐) 결정 공시.
     tcache = {}   # corp_code -> 취득 상세 {rcept_no: (금액, 목적)}
+    scache = {}   # corp_code -> 발행주식 총수(시총 계산용)
     for x, kind in treasury_filings(bgn, end):
         sc = (x.get("stock_code") or "").strip()
         if len(sc) != 6:
@@ -247,12 +272,37 @@ def build_events():
             if det:
                 amount, purpose = det
 
+        # 목적 필터 — 진짜 주주환원 목적이 하나라도 있으면 포함, 절차성만 있으면 제외.
+        # (섞여 있으면 진짜 목적 우선. 목적 불명은 일단 포함.)
+        if kind == "취득" and purpose:
+            has_signal = any(k in purpose for k in TREASURY_INCLUDE)
+            has_noise = any(k in purpose for k in TREASURY_EXCLUDE)
+            if has_noise and not has_signal:
+                continue
+
         p_base, p_last, p_chg, p_asof = None, None, None, None
         sym = sym_map.get(sc)
         if sym:
             if sc not in price_cache:
                 price_cache[sc] = yahoo_closes(sym)
             p_base, p_last, p_chg, p_asof = price_move(price_cache[sc], _iso(x.get("rcept_dt")))
+
+        # 시총 대비 취득 비율 — 공시일 종가 × 발행주식수 = 공시 시점 시총. 못 구하면 null(억원만 표시).
+        cap_ratio = None
+        if kind == "취득" and amount and p_base and cc:
+            if cc not in scache:
+                scache[cc] = shares_total(cc)
+            sh = scache[cc]
+            if sh:
+                cap_ratio = round(amount / (p_base * sh) * 100, 2)
+
+        # 크기 필터(취득만) — 시총 2%+ 이거나, 시총% 못 구했으면 금액 50억+. (아빠 확정 2026-07-10)
+        # 처분은 다 통과(던짐 신호). 이 문턱을 못 넘는 소소한 취득은 뺀다.
+        if kind == "취득":
+            big = (cap_ratio is not None and cap_ratio >= 2.0) or \
+                  (cap_ratio is None and amount is not None and amount >= 5_000_000_000)
+            if not big:
+                continue
 
         events.append({
             "date": _iso(x.get("rcept_dt")),
@@ -265,6 +315,7 @@ def build_events():
             "ratioChange": None,
             "amount": amount,              # 취득예정 금액(원) — 처분은 null
             "purpose": purpose or None,    # 취득 목적(소각/임직원보상 등)
+            "capRatio": cap_ratio,         # 시총 대비 취득 % — 못 구하면 null
             "priceBase": p_base,
             "priceLast": p_last,
             "priceChange": p_chg,
