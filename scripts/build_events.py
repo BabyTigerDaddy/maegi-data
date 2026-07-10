@@ -81,6 +81,44 @@ def majorstock_by_rcept(corp_code):
     return {r.get("rcept_no"): r for r in d.get("list", [])}
 
 
+def treasury_filings(bgn, end):
+    """자기주식 취득/처분 '결정' 공시(신탁계약 제외 — 신탁은 실제 매입과 다른 틀). (공시행, '취득'/'처분')."""
+    out, page = [], 1
+    while True:
+        url = (f"{API}/list.json?crtfc_key={KEY}&bgn_de={bgn}&end_de={end}"
+               f"&pblntf_ty=B&page_count=100&page_no={page}")
+        d = json.loads(_get(url))
+        if d.get("status") != "000":
+            break
+        for x in d.get("list", []):
+            nm = x.get("report_nm", "")
+            if "신탁" in nm:
+                continue
+            if "자기주식취득결정" in nm:
+                out.append((x, "취득"))
+            elif "자기주식처분결정" in nm:
+                out.append((x, "처분"))
+        if page >= int(d.get("total_page", 1)):
+            break
+        page += 1
+    return out
+
+
+def treasury_detail(corp_code, bgn, end):
+    """corp_code 자기주식취득결정 상세 → {접수번호: (취득예정금액 원, 취득목적)}."""
+    try:
+        d = json.loads(_get(f"{API}/tsstkAqDecsn.json?crtfc_key={KEY}&corp_code={corp_code}&bgn_de={bgn}&end_de={end}"))
+    except Exception:
+        return {}
+    if d.get("status") != "000":
+        return {}
+    out = {}
+    for r in d.get("list", []):
+        amt = _num(r.get("aqpln_prc_ostk"))  # 취득예정금액(보통주, 원)
+        out[r.get("rcept_no")] = (int(amt) if amt else None, (r.get("aq_pp") or "").strip())
+    return out
+
+
 def _num(s):
     try:
         return float(str(s).replace(",", ""))
@@ -185,11 +223,53 @@ def build_events():
             "direction": direction,      # 늘림/줄임/유지
             "ratio": ratio,              # 보유비율 %
             "ratioChange": chg,          # 증감 %p
+            "amount": None,              # (자사주 렌즈 전용 — 국민연금은 null)
+            "purpose": None,
             "priceBase": price_base,      # 공시일(휴장이면 직전 거래일) 종가 (원, null 가능)
             "priceLast": price_last,      # 최근 거래일 종가 (원)
             "priceChange": price_change,  # 공시일→최근 변화율 % (null 가능)
             "priceAsOf": price_as_of,     # 최근 종가 기준일
             "rceptNo": f.get("rcept_no"),
+        })
+
+    # ── 자사주 렌즈 ── 회사가 자기 주식 취득(담음)/처분(던짐) 결정 공시.
+    tcache = {}   # corp_code -> 취득 상세 {rcept_no: (금액, 목적)}
+    for x, kind in treasury_filings(bgn, end):
+        sc = (x.get("stock_code") or "").strip()
+        if len(sc) != 6:
+            continue
+        cc = (x.get("corp_code") or "").strip()
+        amount, purpose = None, None
+        if kind == "취득" and cc:
+            if cc not in tcache:
+                tcache[cc] = treasury_detail(cc, bgn, end)
+            det = tcache[cc].get(x.get("rcept_no"))
+            if det:
+                amount, purpose = det
+
+        p_base, p_last, p_chg, p_asof = None, None, None, None
+        sym = sym_map.get(sc)
+        if sym:
+            if sc not in price_cache:
+                price_cache[sc] = yahoo_closes(sym)
+            p_base, p_last, p_chg, p_asof = price_move(price_cache[sc], _iso(x.get("rcept_dt")))
+
+        events.append({
+            "date": _iso(x.get("rcept_dt")),
+            "code": sc,
+            "name": x.get("corp_name"),
+            "source": "자사주",
+            "type": f"자사주{kind}",       # 자사주취득 / 자사주처분
+            "direction": "늘림" if kind == "취득" else "줄임",
+            "ratio": None,
+            "ratioChange": None,
+            "amount": amount,              # 취득예정 금액(원) — 처분은 null
+            "purpose": purpose or None,    # 취득 목적(소각/임직원보상 등)
+            "priceBase": p_base,
+            "priceLast": p_last,
+            "priceChange": p_chg,
+            "priceAsOf": p_asof,
+            "rceptNo": x.get("rcept_no"),
         })
 
     # 최신 공시 우선, 같은 날은 종목코드 순.
