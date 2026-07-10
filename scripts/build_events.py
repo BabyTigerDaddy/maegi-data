@@ -29,7 +29,7 @@ API = "https://opendart.fss.or.kr/api"
 # 진짜 주주환원 신호(소각·주가안정·주주가치 등)가 하나라도 있으면 포함,
 # 절차성(임직원 보상·교환사채·상환)만 있으면 제외. 목적이 섞이면 진짜 신호 우선(포함).
 TREASURY_INCLUDE = ("소각", "안정", "주주가치", "주주환원", "기업가치", "저평가")
-TREASURY_EXCLUDE = ("임직원", "종업원", "상여", "스톡옵션", "스톡그랜트", "우리사주", "교환사채", "상환", "성과급", "합병")
+TREASURY_EXCLUDE = ("임직원", "종업원", "상여", "스톡옵션", "스톡그랜트", "RSU", "우리사주", "교환사채", "상환", "성과급", "합병")
 
 
 def _mask(url):
@@ -122,6 +122,21 @@ def treasury_detail(corp_code, bgn, end):
     for r in d.get("list", []):
         amt = _num(r.get("aqpln_prc_ostk"))  # 취득예정금액(보통주, 원)
         out[r.get("rcept_no")] = (int(amt) if amt else None, (r.get("aq_pp") or "").strip())
+    return out
+
+
+def treasury_dp_detail(corp_code, bgn, end):
+    """corp_code 자기주식처분결정 상세 → {접수번호: (처분예정금액 원, 처분목적)}."""
+    try:
+        d = json.loads(_get(f"{API}/tsstkDpDecsn.json?crtfc_key={KEY}&corp_code={corp_code}&bgn_de={bgn}&end_de={end}"))
+    except Exception:
+        return {}
+    if d.get("status") != "000":
+        return {}
+    out = {}
+    for r in d.get("list", []):
+        amt = _num(r.get("dppln_prc_ostk"))  # 처분예정금액(보통주, 원)
+        out[r.get("rcept_no")] = (int(amt) if amt else None, (r.get("dp_pp") or "").strip())
     return out
 
 
@@ -258,6 +273,7 @@ def build_events():
 
     # ── 자사주 렌즈 ── 회사가 자기 주식 취득(담음)/처분(던짐) 결정 공시.
     tcache = {}   # corp_code -> 취득 상세 {rcept_no: (금액, 목적)}
+    dcache = {}   # corp_code -> 처분 상세 {rcept_no: (금액, 목적)}
     scache = {}   # corp_code -> 발행주식 총수(시총 계산용)
     for x, kind in treasury_filings(bgn, end):
         sc = (x.get("stock_code") or "").strip()
@@ -265,16 +281,21 @@ def build_events():
             continue
         cc = (x.get("corp_code") or "").strip()
         amount, purpose = None, None
-        if kind == "취득" and cc:
-            if cc not in tcache:
-                tcache[cc] = treasury_detail(cc, bgn, end)
-            det = tcache[cc].get(x.get("rcept_no"))
+        if cc:
+            if kind == "취득":
+                if cc not in tcache:
+                    tcache[cc] = treasury_detail(cc, bgn, end)
+                det = tcache[cc].get(x.get("rcept_no"))
+            else:  # 처분
+                if cc not in dcache:
+                    dcache[cc] = treasury_dp_detail(cc, bgn, end)
+                det = dcache[cc].get(x.get("rcept_no"))
             if det:
                 amount, purpose = det
 
-        # 목적 필터 — 진짜 주주환원 목적이 하나라도 있으면 포함, 절차성만 있으면 제외.
-        # (섞여 있으면 진짜 목적 우선. 목적 불명은 일단 포함.)
-        if kind == "취득" and purpose:
+        # 목적 필터(취득·처분 대칭) — 진짜 주주환원 목적이 하나라도 있으면 포함,
+        # 절차성(임직원 RSU·스톡옵션·교환 대응 등)만 있으면 제외. 섞이면 진짜 목적 우선.
+        if purpose:
             has_signal = any(k in purpose for k in TREASURY_INCLUDE)
             has_noise = any(k in purpose for k in TREASURY_EXCLUDE)
             if has_noise and not has_signal:
@@ -287,22 +308,21 @@ def build_events():
                 price_cache[sc] = yahoo_closes(sym)
             p_base, p_last, p_chg, p_asof = price_move(price_cache[sc], _iso(x.get("rcept_dt")))
 
-        # 시총 대비 취득 비율 — 공시일 종가 × 발행주식수 = 공시 시점 시총. 못 구하면 null(억원만 표시).
+        # 시총 대비 금액 비율 — 공시일 종가 × 발행주식수 = 공시 시점 시총. 못 구하면 null(억원만).
         cap_ratio = None
-        if kind == "취득" and amount and p_base and cc:
+        if amount and p_base and cc:
             if cc not in scache:
                 scache[cc] = shares_total(cc)
             sh = scache[cc]
             if sh:
                 cap_ratio = round(amount / (p_base * sh) * 100, 2)
 
-        # 크기 필터(취득만) — 시총 2%+ 이거나, 시총% 못 구했으면 금액 50억+. (아빠 확정 2026-07-10)
-        # 처분은 다 통과(던짐 신호). 이 문턱을 못 넘는 소소한 취득은 뺀다.
-        if kind == "취득":
-            big = (cap_ratio is not None and cap_ratio >= 2.0) or \
-                  (cap_ratio is None and amount is not None and amount >= 5_000_000_000)
-            if not big:
-                continue
+        # 크기 필터(취득·처분 대칭) — 시총 2%+ 이거나, 시총% 못 구했으면 금액 50억+. (아빠 확정)
+        # 문턱 못 넘거나 금액조차 없는 소소한 건 노이즈로 뺀다.
+        big = (cap_ratio is not None and cap_ratio >= 2.0) or \
+              (cap_ratio is None and amount is not None and amount >= 5_000_000_000)
+        if not big:
+            continue
 
         events.append({
             "date": _iso(x.get("rcept_dt")),
