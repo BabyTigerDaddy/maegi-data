@@ -1,0 +1,35 @@
+name: build-events
+
+# 매일 아침 DART에서 국민연금 대량보유 공시를 받아 events.json을 갱신한다('포착' 탭 데이터).
+# 내용이 실제로 바뀐 날만 커밋(스크립트가 비교) → 앱이 괜히 매일 재다운 안 함.
+on:
+  schedule:
+    - cron: '30 23 * * *'   # 매일 08:30 KST (stock_master 08:00 다음, 겹침 방지)
+  workflow_dispatch:        # 수동 실행 버튼
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Generate events.json
+        env:
+          DART_KEY: ${{ secrets.DART_KEY }}   # ★ Settings > Secrets > Actions 에 등록. 코드엔 절대 안 둔다.
+        run: python scripts/build_events.py
+      - name: Commit if changed
+        run: |
+          if [[ -n "$(git status --porcelain events.json)" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add events.json
+            git commit -m "data: events.json 자동 갱신 ($(date -u +%Y-%m-%d))"
+            git push
+          else
+            echo "no change"
+          fi
