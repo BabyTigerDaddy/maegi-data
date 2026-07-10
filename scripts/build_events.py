@@ -93,15 +93,66 @@ def _iso(yyyymmdd):
     return f"{s[0:4]}-{s[4:6]}-{s[6:8]}" if len(s) == 8 else s
 
 
+def market_symbols():
+    """stock_master.json에서 종목코드 -> 야후 심볼(코스피 .KS / 코스닥 .KQ). 없으면 빈 dict."""
+    try:
+        d = json.load(open("stock_master.json", encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for s in d.get("stocks", []):
+        code = (s.get("code") or "").strip()
+        if not code:
+            continue
+        out[code] = f"{code}.KS" if "KOSPI" in (s.get("market") or "") else f"{code}.KQ"
+    return out
+
+
+def yahoo_closes(symbol):
+    """야후 일봉 차트 → {날짜(YYYY-MM-DD): 종가}. 실패(거래정지·상폐·네트워크)면 빈 dict."""
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=6mo&interval=1d"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            d = json.loads(r.read())
+        res = d["chart"]["result"][0]
+        ts, close = res["timestamp"], res["indicators"]["quote"][0]["close"]
+        out = {}
+        for t, c in zip(ts, close):
+            if c is None:
+                continue
+            out[datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%d")] = c
+        return out
+    except Exception:
+        return {}
+
+
+def price_move(closes, filing_iso):
+    """공시일(휴장이면 직전 거래일) 종가·최근 종가·변화율(%)·기준일. 못 구하면 (None,)*4."""
+    if not closes:
+        return None, None, None, None
+    days = sorted(closes)
+    prev = [d for d in days if d <= filing_iso]
+    if not prev:
+        return None, None, None, None
+    base = closes[prev[-1]]
+    last = closes[days[-1]]
+    if not base:
+        return None, None, None, None
+    return round(base), round(last), round((last - base) / base * 100, 2), days[-1]
+
+
 def build_events():
     today = datetime.now(KST).date()
     bgn = (today - timedelta(days=WINDOW_DAYS)).strftime("%Y%m%d")
     end = today.strftime("%Y%m%d")
 
     s2c = corp_map()
+    sym_map = market_symbols()
     filings = nps_filings(bgn, end)
 
     cache = {}          # corp_code -> majorstock(rcept_no->row). 회사당 1번만 호출.
+    price_cache = {}    # code -> 야후 {날짜:종가}. 종목당 1번만 호출.
     events = []
     for f in filings:
         sc = (f.get("stock_code") or "").strip()
@@ -116,6 +167,15 @@ def build_events():
         direction = None
         if chg is not None:
             direction = "늘림" if chg > 0 else ("줄임" if chg < 0 else "유지")
+
+        # 공시일 종가 vs 최근 종가 — '담은 시점부터 지금까지' 종가·등락 (야후, 못 구하면 null).
+        price_base, price_last, price_change, price_as_of = None, None, None, None
+        sym = sym_map.get(sc)
+        if sym:
+            if sc not in price_cache:
+                price_cache[sc] = yahoo_closes(sym)
+            price_base, price_last, price_change, price_as_of = price_move(price_cache[sc], _iso(f.get("rcept_dt")))
+
         events.append({
             "date": _iso(f.get("rcept_dt")),
             "code": sc,
@@ -125,6 +185,10 @@ def build_events():
             "direction": direction,      # 늘림/줄임/유지
             "ratio": ratio,              # 보유비율 %
             "ratioChange": chg,          # 증감 %p
+            "priceBase": price_base,      # 공시일(휴장이면 직전 거래일) 종가 (원, null 가능)
+            "priceLast": price_last,      # 최근 거래일 종가 (원)
+            "priceChange": price_change,  # 공시일→최근 변화율 % (null 가능)
+            "priceAsOf": price_as_of,     # 최근 종가 기준일
             "rceptNo": f.get("rcept_no"),
         })
 
