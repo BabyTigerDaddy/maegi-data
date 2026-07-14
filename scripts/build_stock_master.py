@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sys
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
@@ -19,6 +20,16 @@ HEADERS = {
 }
 MARKETS = [("stockMkt", "KOSPI"), ("kosdaqMkt", "KOSDAQ")]
 OUT = "stock_master.json"
+
+# ETF는 KIND 상장법인목록에 없어서(회사만 나옴) 따로 받는다.
+# 공공데이터포털 '금융위원회 증권상품시세정보'의 ETF시세 → 코드·이름을 얻는다.
+# 키는 환경변수 KRX_API_KEY(GitHub Secrets에만, 리포엔 안 박음). 키가 없으면 ETF는 그냥 건너뛴다.
+ETF_KEY = os.environ.get("KRX_API_KEY", "").strip()
+ETF_URL = "https://apis.data.go.kr/1160100/service/GetSecuritiesProductInfoService/getETFPriceInfo"
+# 국내 ETF는 사실상 전부 코스피 ETF 시장 상장 → 앱이 야후 심볼을 .KS로 붙이면 시세가 잡힌다
+# (코스닥 지수를 추종하는 레버리지 ETF도 상장 자체는 코스피라 .KS. 예: KODEX 코스닥150레버리지 233740).
+ETF_MARKET = "KOSPI"
+ETF_SECTOR = "ETF"  # 자산 배분에서 ETF끼리 묶이도록 별도 섹터로.
 
 # KRX 세부 업종(표준산업분류)은 159종이라 도넛에 그대로 못 쓴다 → 큰 섹터로 묶는다.
 # 위에서부터 첫 매칭(구체적인 것 먼저). 종목이 아니라 '업종 분류' 기준이라 종목이 바뀌어도
@@ -115,21 +126,69 @@ def parse(html, market):
     return rows
 
 
+def fetch_etfs():
+    """공공데이터 ETF시세에서 ETF 코드·이름을 받는다. 키가 없으면 빈 리스트(ETF 생략)."""
+    if not ETF_KEY:
+        print("KRX_API_KEY 없음 - ETF 건너뜀")
+        return []
+    # 최근 영업일을 뒤로 훑어(오늘 장중엔 당일 종가가 아직 없다) totalCount가 잡히는 첫 날을 쓴다.
+    kst = timezone(timedelta(hours=9))
+    today = datetime.now(kst)
+    for back in range(1, 9):
+        bas_dt = (today - timedelta(days=back)).strftime("%Y%m%d")
+        q = urllib.parse.urlencode({
+            "serviceKey": ETF_KEY, "numOfRows": 3000, "pageNo": 1,
+            "resultType": "json", "basDt": bas_dt,
+        })
+        try:
+            with urllib.request.urlopen(ETF_URL + "?" + q, timeout=30) as r:
+                body = json.load(r)["response"]["body"]
+        except Exception as e:
+            print(f"ETF fetch 실패 basDt={bas_dt}: {e}")
+            continue
+        if not body.get("totalCount"):
+            continue
+        items = body.get("items", {}).get("item", [])
+        if isinstance(items, dict):
+            items = [items]
+        out = []
+        for it in items:
+            code = str(it.get("srtnCd", "")).strip()
+            name = str(it.get("itmsNm", "")).strip()
+            if code and name:
+                out.append({"code": code, "name": name, "market": ETF_MARKET, "sector": ETF_SECTOR})
+        print(f"ETF {len(out)}개 (basDt={bas_dt})")
+        return out
+    print("ETF 시세 데이터 있는 영업일 못 찾음 - ETF 건너뜀")
+    return []
+
+
 def main():
+    old = {}
+    if os.path.exists(OUT):
+        with open(OUT, encoding="utf-8") as f:
+            old = json.load(f)
+
     merged = {}
     for mtype, market in MARKETS:
         for s in parse(fetch(mtype), market):
             merged[s["code"]] = s
+    # ETF 추가 — 회사와 코드가 겹치지 않게 이미 있으면 회사 우선(setdefault).
+    etfs = fetch_etfs()
+    if not etfs:
+        # 키가 없거나 ETF API가 실패한 날엔 새로 못 받는다 → 기존 파일의 ETF를 그대로 보존한다.
+        # (안전장치: 키 미설정 상태로 Action이 돌아도 이미 들어간 ETF가 날아가지 않게.)
+        etfs = [s for s in old.get("stocks", []) if s.get("sector") == ETF_SECTOR]
+        if etfs:
+            print(f"ETF API 미사용 - 기존 {len(etfs)}개 유지")
+    for etf in etfs:
+        merged.setdefault(etf["code"], etf)
     stocks = sorted(merged.values(), key=lambda x: x["name"])
 
     if len(stocks) < 1000:  # 파싱 깨짐 방어 — 비정상이면 기존 유지
         print(f"ABORT: too few stocks ({len(stocks)}) - keep existing")
         sys.exit(1)
 
-    old = {}
-    if os.path.exists(OUT):
-        with open(OUT, encoding="utf-8") as f:
-            old = json.load(f)
     if old.get("stocks") == stocks:
         print("no change - skip")
         return
