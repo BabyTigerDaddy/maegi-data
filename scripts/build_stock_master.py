@@ -194,7 +194,9 @@ def main():
         return
 
     kst = timezone(timedelta(hours=9))
-    version = datetime.now(kst).strftime("%Y-%m-%d")
+    # 앱은 이 version 문자열이 바뀌어야 목록을 다시 받는다. 같은 날 두 번 갱신되면(자동 + 수동 등)
+    # 날짜만으론 값이 겹쳐 앱이 '변경 없음'으로 건너뛴다 → 분까지 넣어 내용이 바뀐 갱신은 항상 구분되게.
+    version = datetime.now(kst).strftime("%Y-%m-%d %H:%M")
     out = {"version": version, "count": len(stocks), "stocks": stocks}
     with open(OUT, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, separators=(",", ":"))
