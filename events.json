@@ -1,6 +1,24 @@
 {
- "count": 193,
+ "count": 194,
  "events": [
+  {
+   "amount": 12040000000,
+   "capRatio": 21.14,
+   "code": "024950",
+   "date": "2026-08-14",
+   "direction": "늘림",
+   "name": "삼천리자전거",
+   "priceAsOf": "2026-08-14",
+   "priceBase": 4290,
+   "priceChange": 0.0,
+   "priceLast": 4290,
+   "purpose": "주가 안정 및 주주가치 제고",
+   "ratio": null,
+   "ratioChange": null,
+   "rceptNo": "20260814003415",
+   "source": "자사주",
+   "type": "자사주취득"
+  },
   {
    "amount": 1000000000,
    "capRatio": 4.9,
@@ -3476,5 +3494,5 @@
    "type": "자사주취득"
   }
  ],
- "version": "2026-08-15"
+ "version": "2026-08-16"
 }
