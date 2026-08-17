@@ -1,5 +1,5 @@
 {
- "count": 194,
+ "count": 192,
  "events": [
   {
    "amount": 12040000000,
@@ -3456,43 +3456,7 @@
    "rceptNo": "20260526000118",
    "source": "자사주",
    "type": "자사주취득"
-  },
-  {
-   "amount": 499999241,
-   "capRatio": 3.0,
-   "code": "344860",
-   "date": "2026-05-19",
-   "direction": "늘림",
-   "name": "이노진",
-   "priceAsOf": "2026-08-14",
-   "priceBase": 1386,
-   "priceChange": 0.58,
-   "priceLast": 1394,
-   "purpose": "자기주식 취득 및 소각을 통한 주주가치 제고",
-   "ratio": null,
-   "ratioChange": null,
-   "rceptNo": "20260519000241",
-   "source": "자사주",
-   "type": "자사주취득"
-  },
-  {
-   "amount": 29920000000,
-   "capRatio": 5.32,
-   "code": "058650",
-   "date": "2026-05-19",
-   "direction": "늘림",
-   "name": "세아홀딩스",
-   "priceAsOf": "2026-08-14",
-   "priceBase": 140500,
-   "priceChange": -8.9,
-   "priceLast": 128000,
-   "purpose": "기업가치 제고 및 주주권익 보호",
-   "ratio": null,
-   "ratioChange": null,
-   "rceptNo": "20260519000174",
-   "source": "자사주",
-   "type": "자사주취득"
   }
  ],
- "version": "2026-08-16"
+ "version": "2026-08-18"
 }
