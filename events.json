@@ -1,5 +1,5 @@
 {
- "count": 179,
+ "count": 178,
  "events": [
   {
    "amount": 3999995900,
@@ -3204,25 +3204,7 @@
    "rceptNo": "20260630001092",
    "source": "자사주",
    "type": "자사주취득"
-  },
-  {
-   "amount": 1999998660,
-   "capRatio": 2.46,
-   "code": "058630",
-   "date": "2026-06-29",
-   "direction": "늘림",
-   "name": "엠게임",
-   "priceAsOf": "2026-09-23",
-   "priceBase": 4230,
-   "priceChange": -7.8,
-   "priceLast": 3900,
-   "purpose": "기업가치 제고를 위한 주주환원정책의 일환으로 자기주식 취득 후 소각",
-   "ratio": null,
-   "ratioChange": null,
-   "rceptNo": "20260629000176",
-   "source": "자사주",
-   "type": "자사주취득"
   }
  ],
- "version": "2026-09-24"
+ "version": "2026-09-25"
 }
